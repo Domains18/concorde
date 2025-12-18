@@ -38,5 +38,14 @@ class DiscoveryService {
 
     int broadcast_port_;
     int my_http_port_;
-    std::map<std::string, Peer> getPeers();
+    std::string device_name_;
+
+
+    std::atomic<bool> running_;
+    std::thread broadcast_thread_;
+    std::thread listener_thread_;
+
+    std::mutex peers_mutex_;
+    std::map<std::string, Peer> peers_; //keyed by IP address
+    
 };
