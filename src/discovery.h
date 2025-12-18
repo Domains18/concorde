@@ -38,7 +38,7 @@ class DiscoveryService {
 
     int broadcast_port_;
     int my_http_port_;
-    std::string device_name_;
+    std::string my_device_name_;
 
 
     std::atomic<bool> running_;
