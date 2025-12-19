@@ -12,13 +12,15 @@ std::string serialize_packet(const std::string &name, int port)
     return name + "|" + std::to_string(port) + "|public,docs";
 };
 
-DiscoveryService::DiscoveryService(int b_port, int h_port, std::string name)
+DiscoveryService::DiscoveryService(int b_port, int h_port, const std::string& name)
     : broadcast_port_(b_port), my_http_port_(h_port), my_device_name_(name), running_(false) {}
 
 DiscoveryService::~DiscoveryService() { stop(); }
 
 void DiscoveryService::start()
 {
+    if (running_)
+        return;
     running_ = true;
     broadcast_thread_ = std::thread(&DiscoveryService::broadCastLoop, this);
     listener_thread_ = std::thread(&DiscoveryService::listenLoop, this);
@@ -26,6 +28,8 @@ void DiscoveryService::start()
 
 void DiscoveryService::stop()
 {
+    if (!running_)
+        return;
     running_ = false;
     if (broadcast_thread_.joinable())
         broadcast_thread_.join();
@@ -71,11 +75,11 @@ void DiscoveryService::listenLoop(){
 
     bind(sock, (struct sockaddr *)&recv_addr, sizeof(recv_addr));
 
-    char buffer[1024];
+    char buffer[1025];
     while(running_){
         struct sockaddr_in sender_addr;
         socklen_t sender_len = sizeof(sender_addr);
-        int len = recvfrom(sock, buffer, 1024, 0, (struct sockaddr *)&sender_addr, &sender_len);
+        int len = recvfrom(sock, buffer, sizeof(buffer) - 1, 0, (struct sockaddr *)&sender_addr, &sender_len);
 
         if(len > 0) {
             buffer[len] = '\0';
@@ -87,12 +91,11 @@ void DiscoveryService::listenLoop(){
             peers_[sender_ip] = Peer{
                 .ip_address = sender_ip,
                 .device_name = data.substr(0, data.find("|")),
-                .http_port = std::stoi(data.substr(data.find("|") + 1, data.find("|", data.find("|") + 1))),
+                .http_port = std::stoi(data.substr(
+                    data.find("|") + 1,
+                    data.find("|", data.find("|") + 1) - (data.find("|") + 1))),
                 .shared_folders = {"public", "docs"},
-                .last_seen = std::chrono::steady_clock::now()
-            };
-            // peers_[sender_ip].ip_address = sender_ip;
-            // peers_[sender_ip].last_seen = std::chrono::steady_clock::now();
+                .last_seen = std::chrono::steady_clock::now()};
         }
     }
     close(sock);
