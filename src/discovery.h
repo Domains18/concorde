@@ -19,7 +19,9 @@ struct Peer
 
 class DiscoveryService {
     public:
-        DiscoveryService(int broadcast_port, int http_port, std::string device_name);
+        DiscoveryService(int broadcast_port, int http_port, const std::string& device_name);
+        DiscoveryService(const DiscoveryService&) = delete;
+        DiscoveryService& operator=(const DiscoveryService&) = delete;
         ~DiscoveryService();
 
         void start(); //listener threads
