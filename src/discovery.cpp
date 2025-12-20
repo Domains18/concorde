@@ -1,21 +1,26 @@
 #include "discovery.h"
-#include <iostream>
-#include <cstring>
 #include <arpa/inet.h>
+#include <cstring>
+#include <iostream>
+#include <sstream>
 #include <sys/socket.h>
 #include <unistd.h>
-#include <sstream>
 
 // simple serialization: "deviceName|Port|Folder1,Folder2"
-std::string serialize_packet(const std::string &name, int port)
+std::string serialize_packet(const std::string& name, int port)
 {
     return name + "|" + std::to_string(port) + "|public,docs";
 };
 
 DiscoveryService::DiscoveryService(int b_port, int h_port, const std::string& name)
-    : broadcast_port_(b_port), my_http_port_(h_port), my_device_name_(name), running_(false) {}
+    : broadcast_port_(b_port), my_http_port_(h_port), my_device_name_(name), running_(false)
+{
+}
 
-DiscoveryService::~DiscoveryService() { stop(); }
+DiscoveryService::~DiscoveryService()
+{
+    stop();
+}
 
 void DiscoveryService::start()
 {
@@ -52,7 +57,8 @@ void DiscoveryService::broadCastLoop()
     while (running_)
     {
         std::string msg = serialize_packet(my_device_name_, my_http_port_);
-        sendto(sock, msg.c_str(), msg.length(), 0, (struct sockaddr *)&broadcast_addr, sizeof(broadcast_addr));
+        sendto(sock, msg.c_str(), msg.length(), 0, (struct sockaddr*)&broadcast_addr,
+               sizeof(broadcast_addr));
 
         std::this_thread::sleep_for(std::chrono::seconds(2));
     }
@@ -60,8 +66,8 @@ void DiscoveryService::broadCastLoop()
     close(sock);
 }
 
-
-void DiscoveryService::listenLoop(){
+void DiscoveryService::listenLoop()
+{
     int sock = socket(AF_INET, SOCK_DGRAM, 0);
 
     int reuse = 1;
@@ -73,15 +79,18 @@ void DiscoveryService::listenLoop(){
     recv_addr.sin_port = htons(broadcast_port_);
     recv_addr.sin_addr.s_addr = INADDR_ANY;
 
-    bind(sock, (struct sockaddr *)&recv_addr, sizeof(recv_addr));
+    bind(sock, (struct sockaddr*)&recv_addr, sizeof(recv_addr));
 
     char buffer[1025];
-    while(running_){
+    while (running_)
+    {
         struct sockaddr_in sender_addr;
         socklen_t sender_len = sizeof(sender_addr);
-        int len = recvfrom(sock, buffer, sizeof(buffer) - 1, 0, (struct sockaddr *)&sender_addr, &sender_len);
+        int len = recvfrom(sock, buffer, sizeof(buffer) - 1, 0, (struct sockaddr*)&sender_addr,
+                           &sender_len);
 
-        if(len > 0) {
+        if (len > 0)
+        {
             buffer[len] = '\0';
             std::string data(buffer);
             std::string sender_ip = inet_ntoa(sender_addr.sin_addr);
@@ -92,8 +101,7 @@ void DiscoveryService::listenLoop(){
                 .ip_address = sender_ip,
                 .device_name = data.substr(0, data.find("|")),
                 .http_port = std::stoi(data.substr(
-                    data.find("|") + 1,
-                    data.find("|", data.find("|") + 1) - (data.find("|") + 1))),
+                    data.find("|") + 1, data.find("|", data.find("|") + 1) - (data.find("|") + 1))),
                 .shared_folders = {"public", "docs"},
                 .last_seen = std::chrono::steady_clock::now()};
         }
@@ -101,8 +109,8 @@ void DiscoveryService::listenLoop(){
     close(sock);
 }
 
-
-std::map<std::string, Peer> DiscoveryService::getPeers(){
+std::map<std::string, Peer> DiscoveryService::getPeers()
+{
     std::lock_guard<std::mutex> lock(peers_mutex_);
     return peers_;
 }
