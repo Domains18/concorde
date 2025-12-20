@@ -16,7 +16,7 @@ include_directories(${CMAKE_SOURCE_DIR}/include)
 add_executable(concorde
     src/main.cpp
     src/discovery.cpp
-    src/http_server.cpp
+    src/server.cpp
 )
 
 target_link_libraries(concorde PRIVATE Threads::Threads)
