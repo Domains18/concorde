@@ -1,6 +1,7 @@
 #include "main.h"
 #include "crypto.h"
 #include "trust.h"
+#include <chrono>
 #include <filesystem>
 #include <vector>
 
@@ -23,28 +24,62 @@ void FileServer::run()
 
 void FileServer::setupRoutes()
 {
-    // Helper function to verify request authentication
+    // Helper function to verify request authentication with nonce-based challenge-response
     auto verify_auth = [this](const crow::request& req) -> std::pair<bool, std::string> {
         std::string pubkey = req.get_header_value("X-Pubkey");
         std::string signature = req.get_header_value("X-Signature");
-        
-        if (pubkey.empty() || signature.empty()) {
-            return {false, "Missing authentication headers"};
+        std::string nonce = req.get_header_value("X-Nonce");
+
+        if (pubkey.empty() || signature.empty() || nonce.empty())
+        {
+            return {false, "Missing authentication headers (X-Pubkey, X-Signature, X-Nonce)"};
         }
-        
+
         // Check if trusted
         if (!trust_.is_trusted(pubkey)) {
             return {false, "Device not trusted"};
         }
-        
-        // Verify signature (simplified - in production use challenge-response)
-        std::string challenge = req.url;
+
+        // Verify and consume nonce (prevents replay attacks)
+        if (!consume_nonce(nonce, pubkey))
+        {
+            return {false, "Invalid or expired nonce"};
+        }
+
+        // Verify signature over nonce + URL
+        std::string challenge = nonce + req.url;
         if (!concorde::CryptoUtils::verify_signature(pubkey, challenge, signature)) {
             return {false, "Invalid signature"};
         }
         
         return {true, ""};
     };
+
+    // Challenge endpoint - issue nonce for authentication
+    CROW_ROUTE(app_, "/api/challenge")
+    (
+        [this](const crow::request& req)
+        {
+            cleanup_expired_nonces();
+
+            std::string pubkey = req.get_header_value("X-Pubkey");
+            if (pubkey.empty())
+            {
+                return crow::response(400, "Missing X-Pubkey header");
+            }
+
+            // Check if device is trusted
+            if (!trust_.is_trusted(pubkey))
+            {
+                return crow::response(403, "Device not trusted");
+            }
+
+            std::string nonce = generate_challenge(pubkey);
+            crow::json::wvalue result;
+            result["nonce"] = nonce;
+            result["expires_in"] = NONCE_LIFETIME.count();
+            return crow::response(result);
+        });
 
     // Public endpoint - list local files (authenticated)
     CROW_ROUTE(app_, "/api/files")
@@ -150,8 +185,13 @@ void FileServer::setupRoutes()
                    "<p>🔒 POST /upload - Upload file (requires auth)</p>"
                    "<h2>Public Endpoints:</h2>"
                    "<p>GET /api/peers - List trusted network peers</p>"
+                   "<p>GET /api/challenge - Get nonce for authentication (requires X-Pubkey "
+                   "header)</p>"
                    "<hr>"
-                   "<p><b>Authentication:</b> All file operations require valid Ed25519 signatures.</p>"
+                   "<p><b>Authentication:</b> Challenge-response with Ed25519 signatures and "
+                   "time-limited nonces.</p>"
+                   "<p><b>Flow:</b> 1) Request nonce from /api/challenge, 2) Sign nonce+URL, 3) "
+                   "Send request with X-Nonce, X-Pubkey, X-Signature headers.</p>"
                    "<p>Pair devices using the Concorde CLI to enable file sharing.</p>";
         });
 }
@@ -183,9 +223,68 @@ int main() {
     std::cout << "📁 Shared folder: ./shared\n";
     std::cout << "🌐 HTTP server: http://0.0.0.0:" << http_port << "\n\n";
     std::cout << "🔒 All file operations require authentication\n";
+    std::cout << "   Using challenge-response with time-limited nonces\n";
     std::cout << "   New devices will prompt for pairing approval\n\n";
     
     server.run();
     
     return 0;
+}
+
+// Nonce management implementation
+std::string FileServer::generate_challenge(const std::string& pubkey)
+{
+    std::lock_guard<std::mutex> lock(nonce_mutex_);
+
+    std::string nonce = concorde::CryptoUtils::generate_nonce();
+    auto expires_at = std::chrono::steady_clock::now() + NONCE_LIFETIME;
+
+    active_nonces_[nonce] = {expires_at, pubkey};
+    return nonce;
+}
+
+bool FileServer::consume_nonce(const std::string& nonce, const std::string& pubkey)
+{
+    std::lock_guard<std::mutex> lock(nonce_mutex_);
+
+    auto it = active_nonces_.find(nonce);
+    if (it == active_nonces_.end())
+    {
+        return false; // Nonce not found
+    }
+
+    // Check if nonce is expired
+    if (std::chrono::steady_clock::now() > it->second.expires_at)
+    {
+        active_nonces_.erase(it);
+        return false;
+    }
+
+    // Check if nonce was issued for this pubkey
+    if (it->second.pubkey != pubkey)
+    {
+        return false;
+    }
+
+    // Consume nonce (single use)
+    active_nonces_.erase(it);
+    return true;
+}
+
+void FileServer::cleanup_expired_nonces()
+{
+    std::lock_guard<std::mutex> lock(nonce_mutex_);
+
+    auto now = std::chrono::steady_clock::now();
+    for (auto it = active_nonces_.begin(); it != active_nonces_.end();)
+    {
+        if (now > it->second.expires_at)
+        {
+            it = active_nonces_.erase(it);
+        }
+        else
+        {
+            ++it;
+        }
+    }
 }
