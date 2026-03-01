@@ -1,78 +1,200 @@
-To execute this "discoverable network" architecture in C++, we need to separate the problem into two distinct layers: Discovery (UDP) and Transport (TCP/HTTP).
+# Concorde
 
-Since we want to abstract this properly, we shouldn't hardcode IPs. We need a "heartbeat" system where devices announce their presence and the specific folders they are sharing.
+**Secure P2P file sharing with automatic device discovery**
 
-Here is the architectural blueprint:
+A local network file sharing system that combines the ease of AirDrop with the security of SSH.
 
-1. The Discovery Layer (UDP Broadcast)
-This is how devices find each other without a central server.
+## Features
 
-Mechanism: UDP Broadcasting to 255.255.255.255 on a fixed port (e.g., 9000).
+✅ **Zero Configuration** - No IPs to remember, devices auto-discover  
+✅ **Secure by Default** - Ed25519 public key authentication  
+✅ **Trust On First Use** - SSH-style pairing (approve once, trust forever)  
+✅ **Cross-Platform** - Works on macOS, Linux, and Android (Termux)  
+✅ **Offline** - No internet or external servers required  
 
-The "Beacon": Every few seconds, your daemon sends a small packet to the entire network.
+## Architecture
 
-Packet Structure: A simple struct or JSON string containing:
+### 3-Layer Design
 
-Device Name (e.g., "Linux-Desktop")
+1. **Discovery Layer (UDP Broadcast)**
+   - Devices broadcast presence on LAN (`255.255.255.255:9000`)
+   - Includes: device name, service port, shared folders, public key fingerprint
+   - Auto-pruning of offline devices
 
-Service Port (The TCP port where the HTTP server is running, e.g., 8080)
+2. **Security Layer (Ed25519 PKI)**
+   - Each device has unique keypair (generated on first launch)
+   - Challenge-response authentication for all file transfers
+   - Thread-safe trust store in `~/.concorde/trusted_peers`
 
-Shared Folders (A list of alias names, e.g., ["docs", "movies"])
+3. **Transport Layer (HTTP over TCP)**
+   - File streaming via HTTP server
+   - Endpoints: `/catalog`, `/download/{folder}/{file}`, `/upload`
+   - Only serves to trusted devices
 
-The Listener: A separate thread constantly listens on port 9000. When it hears a beacon from another IP, it adds/updates that device in a local "Peer Map" (in-memory database).
+## Quick Start
 
-2. The Transport Layer (TCP/HTTP)
-Once a device is found via UDP, actual file transfer happens here. We stick with the HTTP server (Crow) because it's reliable and handles large streams well.
+### Prerequisites
 
-Endpoints:
+```bash
+# macOS
+brew install libsodium cmake
 
-GET /catalog: Returns the tree structure of allowed folders.
+# Ubuntu/Debian
+sudo apt install libsodium-dev cmake build-essential
 
-GET /download/{folder_alias}/{filename}: Streams the file.
+# Termux (Android)
+pkg install libsodium cmake clang
+```
 
-POST /upload/{folder_alias}: Accepts incoming files.
+### Build
 
-3. The Logic Flow
-Here is how the system behaves step-by-step:
+```bash
+git clone https://github.com/Domains18/concorde.git
+cd concorde
+mkdir build && cd build
+cmake ..
+make
 
-Startup:
+# Test crypto layer
+./test_crypto
 
-The C++ Daemon reads a config file (e.g., config.json) defining which local paths are mapped to which public aliases.
+# Run daemon
+./concorde
+```
 
-Example Config: {"work": "/home/user/work_docs", "media": "/mnt/hdd/movies"}
+### First Run
 
-The Announcement Loop (Thread A):
+On first launch, Concorde will:
+1. Generate an Ed25519 keypair (`~/.concorde/device.key`, `device.pub`)
+2. Start broadcasting device presence
+3. Listen for other devices
+4. Show pairing prompts when new devices are found
 
-Every 5 seconds, it constructs a packet: MAGIC_ID|MyMacBook|8080|work,media and blasts it to the LAN.
+## Usage
 
-The Discovery Loop (Thread B):
+### Pairing Devices
 
-Listens for packets starting with MAGIC_ID.
+When a new device is discovered, you'll see:
 
-Updates a thread-safe std::map<IPAddress, PeerInfo>.
+```
+╔════════════════════════════════════════╗
+║  🔐 New Device Wants to Connect       ║
+╚════════════════════════════════════════╝
 
-Pruning: If we haven't heard from IP 192.168.1.5 in 15 seconds, remove it from the map (it went offline).
+  Device:      MacBook-Pro
+  Fingerprint: SHA256:a3f2c9e8b1d4
 
-The API Server (Thread C):
+Trust this device? [y/n]:
+```
 
-When you open the frontend, it queries the Peer Map.
+Type `y` to approve. Future connections from this device will auto-authenticate.
 
-It displays a list: "Found 'Living Room TV' sharing 'media'".
+### Sharing Folders
 
-Clicking 'media' triggers a request to Living Room TV's HTTP server to get the file list.
+Create `~/.concorde/config.json`:
 
-4. Why this approach?
-Zero Configuration: You don't need to know IPs. You just launch the app, and it populates the list.
+```json
+{
+  "shares": {
+    "work": "/home/user/Documents/work",
+    "media": "/mnt/storage/movies"
+  },
+  "port": 8080
+}
+```
 
-Scalable: It works for 2 devices or 50 devices.
+Restart Concorde. Other trusted devices will see "work" and "media" in their file browser.
 
-Resilient: If a device drops off WiFi, the "Pruning" logic removes it from the list automatically.
+## Security Model
 
-5. Critical C++ Considerations
-Since we are using C++, we have to handle the networking primitives manually (unless we use Boost.Asio).
+**Trust On First Use (TOFU):**
+- Like SSH, you manually approve devices the first time
+- Public key fingerprints prevent impersonation
+- All subsequent connections auto-authenticate
 
-Sockets: We will need setsockopt with SO_BROADCAST enabled for the UDP socket.
+**Challenge-Response:**
+```
+Client → Server: "I want /file.mp4"
+Server → Client: random_nonce
+Client → Server: signature(nonce + pubkey)
+Server: Verifies signature → Serves file
+```
 
-Concurrency: We need a std::mutex to protect the Peer Map because the UDP thread writes to it while the HTTP thread reads from it.
+**File Structure:**
+```
+~/.concorde/
+├── device.key         (private key, chmod 600)
+├── device.pub         (public key, chmod 644)
+├── trusted_peers      (list of approved devices)
+└── config.json        (shared folders config)
+```
 
-Endianness: If sharing between different architectures (e.g., an ARM Raspberry Pi and an x86 Desktop), we should stick to a text-based beacon (JSON/String) rather than raw binary structs to avoid endianness headaches.
+## Development Status
+
+- [x] Discovery layer (UDP broadcast)
+- [x] Crypto layer (Ed25519 signing)
+- [x] Trust management
+- [x] Test suite
+- [ ] HTTP server integration
+- [ ] Config file parsing
+- [ ] File transfer endpoints
+- [ ] Web UI (frontend)
+- [ ] Mobile app (optional)
+
+## Documentation
+
+- [CRYPTO.md](CRYPTO.md) - Cryptography implementation details
+- [Architecture Overview](#architecture) - System design
+
+## Contributing
+
+Contributions welcome! This is a personal project for secure LAN file sharing.
+
+## License
+
+MIT
+
+---
+
+## Technical Details
+
+### Discovery Packet Format (JSON)
+
+```json
+{
+  "device_name": "MacBook",
+  "ip": "192.168.1.100",
+  "port": 8080,
+  "fingerprint": "SHA256:a3f2c9...",
+  "shares": ["work", "media"],
+  "timestamp": 1234567890,
+  "signature": "..."
+}
+```
+
+### Why Ed25519?
+
+- **Fast** - Faster than RSA for signing/verification
+- **Secure** - 128-bit security level (equivalent to 3072-bit RSA)
+- **Small** - 32-byte public keys, 64-byte signatures
+- **Modern** - Resistant to timing attacks
+- **Widely supported** - libsodium, OpenSSL 1.1+
+
+### Dependencies
+
+- **libsodium** - Crypto primitives (Ed25519, SHA256, random)
+- **CMake** - Build system
+- **C++17** - Modern C++ features (std::filesystem, etc.)
+
+### Platforms Tested
+
+- ✅ macOS (M1/Intel)
+- ✅ Ubuntu 22.04 LTS
+- 🔄 Termux on Android (pending)
+
+## Inspiration
+
+- **AirDrop** - Zero-config device discovery
+- **SSH** - Public key authentication
+- **Syncthing** - Decentralized file sync
+- **Magic Wormhole** - Secure file transfer
