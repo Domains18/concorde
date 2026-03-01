@@ -141,6 +141,14 @@ void DiscoveryService::listenLoop()
                     continue;
                 }
                 
+                // Check timestamp to prevent replay attacks
+                const auto now = std::time(nullptr);
+                if (std::abs(now - timestamp) > 15) // 15s tolerance
+                {
+                    std::cerr << "⚠️  Stale beacon from " << sender_ip << " - rejecting." << std::endl;
+                    continue;
+                }
+
                 // Check if trusted
                 bool is_trusted = trust_.is_trusted(pubkey);
                 
