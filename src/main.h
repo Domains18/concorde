@@ -2,6 +2,7 @@
 #include "crow.h"
 #include "discovery.h"
 #include "trust.h"
+#include "crypto.h"
 #include <string>
 
 class FileServer
@@ -10,7 +11,8 @@ class FileServer
     FileServer(DiscoveryService& discovery, 
               int port, 
               std::string root_dir,
-              concorde::TrustStore& trust);
+              concorde::TrustStore& trust,
+              concorde::DeviceIdentity& identity);
     void run();
 
   private:
@@ -18,7 +20,9 @@ class FileServer
     int port_;
     std::string root_dir_;
     concorde::TrustStore& trust_;
+    concorde::DeviceIdentity& identity_;
     crow::SimpleApp app_;
 
     void setupRoutes();
+    std::string loadWebUI();
 };
