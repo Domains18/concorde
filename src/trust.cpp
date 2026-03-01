@@ -42,9 +42,10 @@ void TrustStore::load() {
         std::getline(iss, pubkey, '|');
         std::getline(iss, device_name, '|');
         std::getline(iss, fingerprint, '|');
-        iss >> first_seen;
-        iss.ignore(1); // Skip '|'
-        iss >> last_seen;
+        if (!(iss >> first_seen) || (iss.get() != '|') || !(iss >> last_seen)) {
+            std::cerr << "Warning: Skipping malformed line in trust store: " << line << std::endl;
+            continue;
+        }
         
         PeerInfo info{pubkey, device_name, fingerprint, first_seen, last_seen};
         trusted_peers_[pubkey] = info;
