@@ -1,4 +1,6 @@
 #include "main.h"
+#include "crypto.h"
+#include "trust.h"
 #include <filesystem>
 #include <vector>
 
@@ -78,10 +80,9 @@ void FileServer::setupRoutes()
                 return crow::response(200);
             });
 
-
-    //download handling
+    // download handling
     CROW_ROUTE(app_, "/download/<string>")
-    ([this](const crow::request& req,crow::response& res, std::string filename){
+    ([this]([[maybe_unused]] const crow::request& req, crow::response& res, std::string filename){
         std::string path = root_dir_ + "/" + filename;
         if(fs::exists(path)){
             res.set_static_file_info(path);
@@ -91,7 +92,6 @@ void FileServer::setupRoutes()
         }
         res.end();
     });
-
 
     // serve the UI (embedded for single binary simplicity and portable use)
     CROW_ROUTE(app_, "/")
@@ -104,4 +104,33 @@ void FileServer::setupRoutes()
                    "<p>Use /upload to upload files.</p>"
                    "<p>Use /download/&lt;filename&gt; to download files.</p>";
         });
+}
+
+// Main entry point
+int main() {
+    std::cout << "🏰 Concorde - Secure P2P File Sharing\n\n";
+    
+    // Load device identity
+    concorde::DeviceIdentity identity = concorde::DeviceIdentity::load_or_create();
+    std::cout << "Device: " << identity.get_device_name() << "\n";
+    std::cout << "Fingerprint: " << identity.get_fingerprint() << "\n\n";
+    
+    // Initialize trust store
+    concorde::TrustStore trust;
+    std::cout << "Trusted peers: " << trust.count() << "\n\n";
+    
+    // Start discovery service
+    int broadcast_port = 9000;
+    int http_port = 8080;
+    DiscoveryService discovery(broadcast_port, http_port, identity.get_device_name());
+    discovery.start();
+    
+    // Start file server
+    FileServer server(discovery, http_port, "./shared");
+    std::cout << "Shared folder: ./shared\n";
+    std::cout << "HTTP server: http://0.0.0.0:" << http_port << "\n\n";
+    
+    server.run();
+    
+    return 0;
 }
