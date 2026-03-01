@@ -49,7 +49,7 @@ pkg install libsodium cmake clang
 ### Build
 
 ```bash
-git clone https://github.com/yourusername/concorde.git
+git clone https://github.com/Domains18/concorde.git
 cd concorde
 mkdir build && cd build
 cmake ..
