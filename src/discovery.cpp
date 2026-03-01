@@ -120,6 +120,7 @@ void DiscoveryService::listenLoop()
                 // Extract beacon fields
                 std::string device_name = beacon["device_name"];
                 int port = beacon["port"];
+                time_t timestamp = beacon["timestamp"];
                 std::string pubkey = beacon["public_key"];
                 std::string fingerprint = beacon["fingerprint"];
                 std::string signature = beacon["signature"];
