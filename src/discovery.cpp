@@ -120,6 +120,7 @@ void DiscoveryService::listenLoop()
                 // Extract beacon fields
                 std::string device_name = beacon["device_name"];
                 int port = beacon["port"];
+                time_t timestamp = beacon["timestamp"];
                 std::string pubkey = beacon["public_key"];
                 std::string fingerprint = beacon["fingerprint"];
                 std::string signature = beacon["signature"];
@@ -140,6 +141,14 @@ void DiscoveryService::listenLoop()
                     continue;
                 }
                 
+                // Check timestamp to prevent replay attacks
+                const auto now = std::time(nullptr);
+                if (std::abs(now - timestamp) > 15) // 15s tolerance
+                {
+                    std::cerr << "⚠️  Stale beacon from " << sender_ip << " - rejecting." << std::endl;
+                    continue;
+                }
+
                 // Check if trusted
                 bool is_trusted = trust_.is_trusted(pubkey);
                 

@@ -1,6 +1,7 @@
 #include "main.h"
 #include "crypto.h"
 #include "trust.h"
+#include <chrono>
 #include <filesystem>
 #include <vector>
 #include <fstream>
@@ -40,13 +41,15 @@ std::string FileServer::loadWebUI()
 
 void FileServer::setupRoutes()
 {
-    // Helper function to verify request authentication (for remote access)
+    // Helper function to verify request authentication with nonce-based challenge-response
     auto verify_auth = [this](const crow::request& req) -> std::pair<bool, std::string> {
         std::string pubkey = req.get_header_value("X-Pubkey");
         std::string signature = req.get_header_value("X-Signature");
-        
-        if (pubkey.empty() || signature.empty()) {
-            return {false, "Missing authentication headers"};
+        std::string nonce = req.get_header_value("X-Nonce");
+
+        if (pubkey.empty() || signature.empty() || nonce.empty())
+        {
+            return {false, "Missing authentication headers (X-Pubkey, X-Signature, X-Nonce)"};
         }
         
         if (!trust_.is_trusted(pubkey)) {
@@ -280,4 +283,62 @@ int main() {
     server.run();
     
     return 0;
+}
+
+// Nonce management implementation
+std::string FileServer::generate_challenge(const std::string& pubkey)
+{
+    std::lock_guard<std::mutex> lock(nonce_mutex_);
+
+    std::string nonce = concorde::CryptoUtils::generate_nonce();
+    auto expires_at = std::chrono::steady_clock::now() + NONCE_LIFETIME;
+
+    active_nonces_[nonce] = {expires_at, pubkey};
+    return nonce;
+}
+
+bool FileServer::consume_nonce(const std::string& nonce, const std::string& pubkey)
+{
+    std::lock_guard<std::mutex> lock(nonce_mutex_);
+
+    auto it = active_nonces_.find(nonce);
+    if (it == active_nonces_.end())
+    {
+        return false; // Nonce not found
+    }
+
+    // Check if nonce is expired
+    if (std::chrono::steady_clock::now() > it->second.expires_at)
+    {
+        active_nonces_.erase(it);
+        return false;
+    }
+
+    // Check if nonce was issued for this pubkey
+    if (it->second.pubkey != pubkey)
+    {
+        return false;
+    }
+
+    // Consume nonce (single use)
+    active_nonces_.erase(it);
+    return true;
+}
+
+void FileServer::cleanup_expired_nonces()
+{
+    std::lock_guard<std::mutex> lock(nonce_mutex_);
+
+    auto now = std::chrono::steady_clock::now();
+    for (auto it = active_nonces_.begin(); it != active_nonces_.end();)
+    {
+        if (now > it->second.expires_at)
+        {
+            it = active_nonces_.erase(it);
+        }
+        else
+        {
+            ++it;
+        }
+    }
 }
