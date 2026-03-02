@@ -3,8 +3,7 @@
 #include "crow.h"
 #include "discovery.h"
 #include "trust.h"
-#include <chrono>
-#include <mutex>
+#include "crypto.h"
 #include <string>
 #include <unordered_map>
 
@@ -14,7 +13,8 @@ class FileServer
     FileServer(DiscoveryService& discovery, 
               int port, 
               std::string root_dir,
-              concorde::TrustStore& trust);
+              concorde::TrustStore& trust,
+              concorde::DeviceIdentity& identity);
     void run();
 
   private:
@@ -22,6 +22,7 @@ class FileServer
     int port_;
     std::string root_dir_;
     concorde::TrustStore& trust_;
+    concorde::DeviceIdentity& identity_;
     crow::SimpleApp app_;
 
     // Nonce management for challenge-response authentication
@@ -35,7 +36,5 @@ class FileServer
     const std::chrono::seconds NONCE_LIFETIME{60}; // 60 second validity
 
     void setupRoutes();
-    std::string generate_challenge(const std::string& pubkey);
-    bool consume_nonce(const std::string& nonce, const std::string& pubkey);
-    void cleanup_expired_nonces();
+    std::string loadWebUI();
 };

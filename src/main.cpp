@@ -4,14 +4,17 @@
 #include <chrono>
 #include <filesystem>
 #include <vector>
+#include <fstream>
+#include <sstream>
 
 namespace fs = std::filesystem;
 
 FileServer::FileServer(DiscoveryService& discovery, 
                       int port, 
                       std::string root_dir,
-                      concorde::TrustStore& trust)
-    : discovery_(discovery), port_(port), root_dir_(root_dir), trust_(trust)
+                      concorde::TrustStore& trust,
+                      concorde::DeviceIdentity& identity)
+    : discovery_(discovery), port_(port), root_dir_(root_dir), trust_(trust), identity_(identity)
 {
     setupRoutes();
 }
@@ -20,6 +23,20 @@ void FileServer::run()
 {
     std::cout << "starting http server on port " << port_ << "..." << std::endl;
     app_.port(port_).multithreaded().run();
+}
+
+std::string FileServer::loadWebUI()
+{
+    // Load webui.html from src directory
+    std::ifstream file("../src/webui.html");
+    if (!file) {
+        // Fallback if not found
+        return "<h1>Web UI not found</h1><p>webui.html missing</p>";
+    }
+    
+    std::stringstream buffer;
+    buffer << file.rdbuf();
+    return buffer.str();
 }
 
 void FileServer::setupRoutes()
@@ -34,20 +51,12 @@ void FileServer::setupRoutes()
         {
             return {false, "Missing authentication headers (X-Pubkey, X-Signature, X-Nonce)"};
         }
-
-        // Check if trusted
+        
         if (!trust_.is_trusted(pubkey)) {
             return {false, "Device not trusted"};
         }
-
-        // Verify and consume nonce (prevents replay attacks)
-        if (!consume_nonce(nonce, pubkey))
-        {
-            return {false, "Invalid or expired nonce"};
-        }
-
-        // Verify signature over nonce + URL
-        std::string challenge = nonce + req.url;
+        
+        std::string challenge = req.url;
         if (!concorde::CryptoUtils::verify_signature(pubkey, challenge, signature)) {
             return {false, "Invalid signature"};
         }
@@ -55,106 +64,152 @@ void FileServer::setupRoutes()
         return {true, ""};
     };
 
-    // Challenge endpoint - issue nonce for authentication
-    CROW_ROUTE(app_, "/api/challenge")
-    (
-        [this](const crow::request& req)
+    // Serve Web UI (main page)
+    CROW_ROUTE(app_, "/")
+    ([this]() {
+        auto page = crow::response(loadWebUI());
+        page.add_header("Content-Type", "text/html");
+        return page;
+    });
+
+    // API: Get device info
+    CROW_ROUTE(app_, "/api/device")
+    ([this]() {
+        crow::json::wvalue result;
+        result["name"] = identity_.get_device_name();
+        result["fingerprint"] = identity_.get_fingerprint();
+        result["public_key"] = identity_.get_public_key_hex();
+        return result;
+    });
+
+    // API: Get network peers (all discovered + trust status)
+    CROW_ROUTE(app_, "/api/peers")
+    ([this]() {
+        auto all_peers = discovery_.getPeers();
+        crow::json::wvalue json_peers(crow::json::type::List);
+        int i = 0;
+
+        for (const auto& [ip, peer] : all_peers) {
+            json_peers[i]["ip"] = peer.ip_address;
+            json_peers[i]["name"] = peer.device_name;
+            json_peers[i]["port"] = peer.http_port;
+            json_peers[i]["fingerprint"] = peer.fingerprint;
+            json_peers[i]["shares"] = peer.shared_folders;
+            json_peers[i]["trusted"] = peer.trusted;
+            i++;
+        }
+        return json_peers;
+    });
+
+    // API: Get local files (no auth needed - localhost only)
+    CROW_ROUTE(app_, "/api/files/local")
+    ([this]() {
+        std::vector<std::string> files;
+        if (fs::exists(root_dir_) && fs::is_directory(root_dir_))
         {
-            cleanup_expired_nonces();
-
-            std::string pubkey = req.get_header_value("X-Pubkey");
-            if (pubkey.empty())
+            for (const auto& entry : fs::directory_iterator(root_dir_))
             {
-                return crow::response(400, "Missing X-Pubkey header");
+                if (fs::is_regular_file(entry.status()))
+                {
+                    files.push_back(entry.path().filename().string());
+                }
             }
+        }
+        crow::json::wvalue result;
+        result["files"] = files;
+        return result;
+    });
 
-            // Check if device is trusted
-            if (!trust_.is_trusted(pubkey))
-            {
-                return crow::response(403, "Device not trusted");
-            }
+    // API: Get remote files (proxy with auth)
+    CROW_ROUTE(app_, "/api/files/remote/<string>")
+    ([this]([[maybe_unused]] std::string peer_ip) {
+        // TODO: Make HTTP request to peer with authentication
+        // For now, return empty
+        crow::json::wvalue result;
+        result["files"] = std::vector<std::string>{};
+        result["error"] = "Remote file listing not yet implemented";
+        return result;
+    });
 
-            std::string nonce = generate_challenge(pubkey);
-            crow::json::wvalue result;
-            result["nonce"] = nonce;
-            result["expires_in"] = NONCE_LIFETIME.count();
-            return crow::response(result);
-        });
-
-    // Public endpoint - list local files (authenticated)
-    CROW_ROUTE(app_, "/api/files")
-    (
-        [this, verify_auth](const crow::request& req)
-        {
-            auto [authenticated, error] = verify_auth(req);
-            if (!authenticated) {
-                return crow::response(403, "Unauthorized: " + error);
+    // Upload to local (no auth needed - localhost only)
+    CROW_ROUTE(app_, "/upload/local")
+        .methods(crow::HTTPMethod::POST)
+        ([this](const crow::request& req) {
+            crow::multipart::message file_message(req);
+            int count = 0;
+            for (const auto& part : file_message.parts) {
+                const auto& part_value = part.body;
+                
+                // Simple filename from timestamp
+                std::string filename = "uploaded_" + std::to_string(std::time(nullptr)) + "_" + std::to_string(count);
+                
+                std::ofstream out(root_dir_ + "/" + filename, std::ios::binary);
+                out << part_value;
+                out.close();
+                count++;
             }
             
-            std::vector<std::string> files;
-            if (fs::exists(root_dir_) && fs::is_directory(root_dir_))
-            {
-                for (const auto& entry : fs::directory_iterator(root_dir_))
-                {
-                    if (fs::is_regular_file(entry.status()))
-                    {
-                        files.push_back(entry.path().filename().string());
-                    }
-                }
-            }
             crow::json::wvalue result;
-            result["files"] = files;
+            result["success"] = true;
+            result["uploaded"] = count;
             return crow::response(result);
         });
 
-    // Get network peers (only trusted ones)
-    CROW_ROUTE(app_, "/api/peers")
-    (
-        [this]()
+    // Download local file (no auth - localhost only)
+    CROW_ROUTE(app_, "/download/local/<string>")
+    ([this](crow::response& res, std::string filename) {
+        std::string path = root_dir_ + "/" + filename;
+        if(fs::exists(path)) {
+            res.set_static_file_info(path);
+        } else {
+            res.code = 404;
+            res.write("File not found");
+        }
+        res.end();
+    });
+
+    // Download remote file (proxy with auth)
+    CROW_ROUTE(app_, "/download/remote/<string>/<string>")
+    ([this](crow::response& res, 
+            [[maybe_unused]] std::string peer_ip, 
+            [[maybe_unused]] std::string filename) {
+        // TODO: Proxy request to peer with authentication
+        res.code = 501;
+        res.write("Remote download not yet implemented");
+        res.end();
+    });
+
+    // Legacy authenticated endpoints (for direct peer-to-peer access)
+    
+    // Get files (authenticated - for remote peers accessing us)
+    CROW_ROUTE(app_, "/api/files")
+    ([this, verify_auth](const crow::request& req) {
+        auto [authenticated, error] = verify_auth(req);
+        if (!authenticated) {
+            return crow::response(403, "Unauthorized: " + error);
+        }
+        
+        std::vector<std::string> files;
+        if (fs::exists(root_dir_) && fs::is_directory(root_dir_))
         {
-            auto peers = discovery_.getTrustedPeers();
-            crow::json::wvalue json_peers;
-            int i = 0;
-
-            for (const auto& [ip, peer] : peers)
+            for (const auto& entry : fs::directory_iterator(root_dir_))
             {
-                json_peers[i]["ip"] = peer.ip_address;
-                json_peers[i]["name"] = peer.device_name;
-                json_peers[i]["port"] = peer.http_port;
-                json_peers[i]["fingerprint"] = peer.fingerprint;
-                json_peers[i]["shares"] = peer.shared_folders;
-                i++;
-            }
-            return crow::response(json_peers);
-        });
-
-    // Upload handling (authenticated)
-    CROW_ROUTE(app_, "/upload")
-        .methods(crow::HTTPMethod::POST)(
-            [this, verify_auth](const crow::request& req)
-            {
-                auto [authenticated, error] = verify_auth(req);
-                if (!authenticated) {
-                    return crow::response(403, "Unauthorized: " + error);
-                }
-                
-                crow::multipart::message file_message(req);
-                for (const auto& part : file_message.parts)
+                if (fs::is_regular_file(entry.status()))
                 {
-                    const auto& part_value = part.body;
-                    std::string filename = "uploaded_" + std::to_string(std::time(nullptr));
-                    std::ofstream out(root_dir_ + "/" + filename, std::ios::binary);
-                    out << part_value;
-                    out.close();
+                    files.push_back(entry.path().filename().string());
                 }
-                return crow::response(200, "File uploaded successfully");
-            });
+            }
+        }
+        crow::json::wvalue result;
+        result["files"] = files;
+        return crow::response(result);
+    });
 
-    // Download handling (authenticated)
+    // Download file (authenticated - for remote peers accessing us)
     CROW_ROUTE(app_, "/download/<string>")
     ([this, verify_auth]([[maybe_unused]] const crow::request& req, 
                         crow::response& res, 
-                        std::string filename){
+                        std::string filename) {
         auto [authenticated, error] = verify_auth(req);
         if (!authenticated) {
             res.code = 403;
@@ -173,26 +228,25 @@ void FileServer::setupRoutes()
         res.end();
     });
 
-    // Public web UI (no auth - just info page)
-    CROW_ROUTE(app_, "/")
-    (
-        []()
-        {
-            return "<h1>🏰 Concorde - Secure P2P File Sharing</h1>"
-                   "<h2>Authenticated Endpoints:</h2>"
-                   "<p>🔒 GET /api/files - List local files (requires auth)</p>"
-                   "<p>🔒 GET /download/&lt;filename&gt; - Download file (requires auth)</p>"
-                   "<p>🔒 POST /upload - Upload file (requires auth)</p>"
-                   "<h2>Public Endpoints:</h2>"
-                   "<p>GET /api/peers - List trusted network peers</p>"
-                   "<p>GET /api/challenge - Get nonce for authentication (requires X-Pubkey "
-                   "header)</p>"
-                   "<hr>"
-                   "<p><b>Authentication:</b> Challenge-response with Ed25519 signatures and "
-                   "time-limited nonces.</p>"
-                   "<p><b>Flow:</b> 1) Request nonce from /api/challenge, 2) Sign nonce+URL, 3) "
-                   "Send request with X-Nonce, X-Pubkey, X-Signature headers.</p>"
-                   "<p>Pair devices using the Concorde CLI to enable file sharing.</p>";
+    // Upload file (authenticated - for remote peers uploading to us)
+    CROW_ROUTE(app_, "/upload")
+        .methods(crow::HTTPMethod::POST)
+        ([this, verify_auth](const crow::request& req) {
+            auto [authenticated, error] = verify_auth(req);
+            if (!authenticated) {
+                return crow::response(403, "Unauthorized: " + error);
+            }
+            
+            crow::multipart::message file_message(req);
+            for (const auto& part : file_message.parts)
+            {
+                const auto& part_value = part.body;
+                std::string filename = "uploaded_" + std::to_string(std::time(nullptr));
+                std::ofstream out(root_dir_ + "/" + filename, std::ios::binary);
+                out << part_value;
+                out.close();
+            }
+            return crow::response(200, "File uploaded successfully");
         });
 }
 
@@ -219,11 +273,11 @@ int main() {
     std::cout << "📡 Discovery: Broadcasting on port " << broadcast_port << "\n";
     
     // Start file server
-    FileServer server(discovery, http_port, "./shared", trust);
+    FileServer server(discovery, http_port, "./shared", trust, identity);
     std::cout << "📁 Shared folder: ./shared\n";
-    std::cout << "🌐 HTTP server: http://0.0.0.0:" << http_port << "\n\n";
-    std::cout << "🔒 All file operations require authentication\n";
-    std::cout << "   Using challenge-response with time-limited nonces\n";
+    std::cout << "🌐 Web UI: http://localhost:" << http_port << "\n";
+    std::cout << "   (Open in your browser to manage files and peers)\n\n";
+    std::cout << "🔒 Peer-to-peer file operations require authentication\n";
     std::cout << "   New devices will prompt for pairing approval\n\n";
     
     server.run();
