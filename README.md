@@ -2,15 +2,7 @@
 
 **Secure P2P file sharing with automatic device discovery**
 
-A local network file sharing system that combines the ease of AirDrop with the security of SSH.
-
-## Features
-
-✅ **Zero Configuration** - No IPs to remember, devices auto-discover  
-✅ **Secure by Default** - Ed25519 public key authentication  
-✅ **Trust On First Use** - SSH-style pairing (approve once, trust forever)  
-✅ **Cross-Platform** - Works on macOS, Linux, and Android (Termux)  
-✅ **Offline** - No internet or external servers required  
+A local network file sharing system that combines the ease of AirDrop with the security of SSH
 
 ## Architecture
 
@@ -129,18 +121,6 @@ Server: Verifies signature → Serves file
 └── config.json        (shared folders config)
 ```
 
-## Development Status
-
-- [x] Discovery layer (UDP broadcast)
-- [x] Crypto layer (Ed25519 signing)
-- [x] Trust management
-- [x] Test suite
-- [ ] HTTP server integration
-- [ ] Config file parsing
-- [ ] File transfer endpoints
-- [ ] Web UI (frontend)
-- [ ] Mobile app (optional)
-
 ## Documentation
 
 - [CRYPTO.md](CRYPTO.md) - Cryptography implementation details
@@ -185,12 +165,6 @@ MIT
 - **libsodium** - Crypto primitives (Ed25519, SHA256, random)
 - **CMake** - Build system
 - **C++17** - Modern C++ features (std::filesystem, etc.)
-
-### Platforms Tested
-
-- ✅ macOS (M1/Intel)
-- ✅ Ubuntu 22.04 LTS
-- 🔄 Termux on Android (pending)
 
 ## Inspiration
 
